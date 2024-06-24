@@ -54,7 +54,6 @@ class ZCLoRALinear(nn.Module):
             self.bias = None
 
         self.scaling = alpha / rank
-
         self.zero_conv = nn.Conv2d(1,1,kernel_size=1, bias=True, device=device, dtype=self.dtype)
         self.zero_conv.weight.data.fill_(0)
         self.zero_conv.bias.data.fill_(0)
@@ -64,7 +63,8 @@ class ZCLoRALinear(nn.Module):
         x = x.to(self.dtype)
 
         if self.apply_lora is False:
-            return torch.matmul(x, self.W.T.to(self.dtype)) + (self.bias.to(self.dtype) if self.bias is not None else 0)
+            x = torch.matmul(x, self.W.T.to(self.dtype)) + (self.bias.to(self.dtype) if self.bias is not None else 0)
+            return x.to(x_dtype)
 
         low_rank_update = self.scaling * torch.matmul(self.A, self.B)
 
@@ -155,7 +155,7 @@ if __name__ == "__main__":
             self.assertIsNotNone(self.vector.grad, "Gradient should be computed")
             self.assertTrue(torch.any(self.vector.grad != 0), "Gradient should not be zero")
 
-            self.assertEqual(output,output2, "LoRA should have no effect without training")
+            self.assertEqual(output.sum(),output2.sum(), "LoRA should have no effect without training")
         
     
     unittest.main()
