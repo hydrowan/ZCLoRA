@@ -32,7 +32,8 @@ class ZCLoRALinear(nn.Module):
 
         super().__init__()
         # Externally set inference variables
-        self.apply_lora = True 
+        self._apply_lora = True 
+        self.merged = False
         self.lora_strength = 1.0 
         # Use apply_lora = False over lora_strength = 0.0 as it saves compute
 
@@ -58,13 +59,19 @@ class ZCLoRALinear(nn.Module):
         self.zero_conv.weight.data.fill_(0)
         self.zero_conv.bias.data.fill_(0)
 
-    def forward(self, x):
-        x_dtype = x.dtype # x and self.dtype are likely f32 anyway
-        x = x.to(self.dtype)
+    def merge_lora(self):
+        """
+        Bakes ZCLoRA into W permanently to increase inference speed
+        """
 
-        if self.apply_lora is False:
-            x = torch.matmul(x, self.W.T.to(self.dtype)) + (self.bias.to(self.dtype) if self.bias is not None else 0)
-            return x.to(x_dtype)
+        self.W = self.get_W_prime()
+        self.merged = True
+        self._apply_lora = False
+
+        # Weight cleanup to save memory
+        del self.A, self.B, self.scaling, self.zero_conv, self.lora_strength
+    
+    def get_W_prime(self):
 
         low_rank_update = self.scaling * torch.matmul(self.A, self.B)
 
@@ -93,11 +100,29 @@ class ZCLoRALinear(nn.Module):
                 "b 1 h w -> b h w"
             )
 
-        W_prime = self.lora_strength * self.W.to(self.dtype) + low_rank_update
+        W_prime = self.W.to(self.dtype) + (self.lora_strength * low_rank_update)
+
+        return W_prime
+
+    def forward(self, x):
+        x_dtype = x.dtype # x and self.dtype are likely f32 anyway
+        x = x.to(self.dtype)
+
+        if self._apply_lora is False:
+            x = torch.matmul(x, self.W.T.to(self.dtype)) + (self.bias.to(self.dtype) if self.bias is not None else 0)
+            return x.to(x_dtype)
+
+        W_prime = self.get_W_prime()
 
         x = torch.matmul(x, W_prime.T) + (self.bias.to(self.dtype) if self.bias is not None else 0)
         return x.to(x_dtype)
-
+    
+    def setter_apply_lora(self, use_lora:bool, verbose=False):
+        if self.merged and use_lora == True: raise ValueError("LoRA has already been merged into weights")
+        self._apply_lora = use_lora
+        if verbose:
+            if use_lora: print("LoRA enabled")
+            if not use_lora: print("LoRA disabled")
 
     @staticmethod
     def apply_model(pipe, rank, alpha):
@@ -149,14 +174,29 @@ if __name__ == "__main__":
             self.assertIsNotNone(self.vector.grad, "Gradient should be computed")
             self.assertTrue(torch.any(self.vector.grad != 0), "Gradient should not be zero")
 
-            linear.apply_lora = False
+            linear.setter_apply_lora(False)
             output2 = linear(self.vector)
             output2.sum().backward()
             self.assertIsNotNone(self.vector.grad, "Gradient should be computed")
             self.assertTrue(torch.any(self.vector.grad != 0), "Gradient should not be zero")
 
             self.assertEqual(output.sum(),output2.sum(), "LoRA should have no effect without training")
-        
-    
+        def test_merge(self):
+            linear = ZCLoRALinear(original_layer=self.original_layer)
+            linear.merge_lora()
+
+            x = linear(self.vector)
+            self.assertIsNotNone(x)
+
+            try:
+                linear.setter_apply_lora(False)
+            except Exception as e:
+                self.fail(f"{e}")
+
+            with self.assertRaises(ValueError):
+                linear.setter_apply_lora(True)
+            
+
+
     unittest.main()
         
